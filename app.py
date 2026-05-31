@@ -1,5 +1,5 @@
 
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify
 from werkzeug.utils import secure_filename
 import os
 import re
@@ -7,9 +7,6 @@ import json
 from datetime import datetime
 import pandas as pd
 import pdfplumber
-from pdf2image import convert_from_path
-import pytesseract
-from PIL import Image
 import io
 import base64
 import plotly.express as px
@@ -33,7 +30,7 @@ class CRCAnalyzer:
         self.recomendacoes = []
 
     def extrair_dados_pdf(self, pdf_path):
-        """Extrai dados do PDF do CRC usando pdfplumber e OCR de fallback"""
+        """Extrai dados do PDF do CRC usando pdfplumber"""
         dados_extraidos = {
             'titular': '',
             'data_consulta': '',
@@ -42,7 +39,6 @@ class CRCAnalyzer:
         }
 
         try:
-            # Tentar extrair com pdfplumber primeiro
             with pdfplumber.open(pdf_path) as pdf:
                 texto_completo = ""
                 for page in pdf.pages:
@@ -54,19 +50,17 @@ class CRCAnalyzer:
                 dados_extraidos['titular'] = self._extrair_titular(texto_completo)
                 dados_extraidos['data_consulta'] = self._extrair_data_consulta(texto_completo)
 
-                # Tentar extrair tabelas de créditos
+                # Extrair tabelas de créditos
                 tabelas = self._extrair_tabelas_pdfplumber(pdf)
 
                 if tabelas and len(tabelas) > 0:
                     dados_extraidos['creditos'] = self._parse_tabelas_creditos(tabelas)
                 else:
-                    # Fallback para OCR se não conseguir extrair tabelas
-                    dados_extraidos['creditos'] = self._extrair_creditos_ocr(pdf_path)
+                    # Tentar extrair do texto como fallback
+                    dados_extraidos['creditos'] = self._extrair_creditos_texto(texto_completo)
 
         except Exception as e:
-            print(f"Erro na extração com pdfplumber: {e}")
-            # Fallback para OCR
-            dados_extraidos['creditos'] = self._extrair_creditos_ocr(pdf_path)
+            print(f"Erro na extração: {e}")
 
         return dados_extraidos
 
@@ -255,56 +249,63 @@ class CRCAnalyzer:
             return []
         return [f.strip() for f in str(fia_str).split(',') if f.strip()]
 
-    def _extrair_creditos_ocr(self, pdf_path):
-        """Extrai créditos usando OCR como fallback"""
+    def _extrair_creditos_texto(self, texto):
+        """Extrai créditos do texto como fallback"""
         creditos = []
-        try:
-            images = convert_from_path(pdf_path, dpi=300)
-            texto_completo = ""
-            for image in images:
-                texto = pytesseract.image_to_string(image, lang='por')
-                texto_completo += texto + "\n"
+        # Padrões para encontrar blocos de crédito no texto
+        linhas = texto.split('\n')
 
-            # Padrões regex para extrair créditos do texto OCR
-            # Procurar por blocos que parecem créditos
-            padrao_credito = re.compile(
-                r'(\w+(?:\s+\w+){0,5})\s+'  # Entidade
-                r'(Crédito(?:\s+\w+){0,3}|Cartão(?:\s+\w+){0,2}|Habitação|Consumo|Automóvel)\s+'  # Produto
-                r'(?:.*?)(\d[\d\s.,]+)\s*€?\s*'  # Montante
-                r'(?:.*?)(\d[\d\s.,]+)\s*€?\s*(?:mensal|mês)?',  # Prestação
-                re.IGNORECASE | re.DOTALL
-            )
-
-            # Implementação simplificada - extrair linhas com valores monetários
-            linhas = texto_completo.split('\n')
-            for linha in linhas:
-                if '€' in linha or 'EUR' in linha:
-                    valores = re.findall(r'(\d[\d\s.,]+)\s*€', linha)
-                    if len(valores) >= 2:
-                        credito = {
-                            'entidade': 'Entidade não identificada',
-                            'produto': 'Produto não identificado',
-                            'tipo_negociacao': '',
-                            'data_inicio': '',
-                            'data_fim': '',
-                            'montante_inicial': 0.0,
-                            'montante_divida': self._parse_montante(valores[0]),
-                            'montante_vencido': 0.0,
-                            'montante_abatido': 0.0,
-                            'prestacao_mensal': self._parse_montante(valores[-1]),
-                            'taxa_juro': 0.0,
-                            'prazo_total': 0,
-                            'prazo_restante': 0,
-                            'situacao': 'Regular',
-                            'garantias': [],
-                            'fiadores': []
-                        }
-                        creditos.append(credito)
-
-        except Exception as e:
-            print(f"Erro no OCR: {e}")
+        for i, linha in enumerate(linhas):
+            # Procurar por linhas que parecem ter dados de crédito
+            if any(entidade in linha for entidade in ['Banco', 'Caixa', 'Millennium', 'Novo Banco', 'Santander', 'CGD', 'BCP']):
+                # Tentar extrair dados da linha atual e próximas
+                credito = self._parse_bloco_credito(linhas, i)
+                if credito:
+                    creditos.append(credito)
 
         return creditos
+
+    def _parse_bloco_credito(self, linhas, idx):
+        """Parse de um bloco de crédito do texto"""
+        credito = {
+            'entidade': '',
+            'produto': '',
+            'tipo_negociacao': '',
+            'data_inicio': '',
+            'data_fim': '',
+            'montante_inicial': 0.0,
+            'montante_divida': 0.0,
+            'montante_vencido': 0.0,
+            'montante_abatido': 0.0,
+            'prestacao_mensal': 0.0,
+            'taxa_juro': 0.0,
+            'prazo_total': 0,
+            'prazo_restante': 0,
+            'situacao': 'Regular',
+            'garantias': [],
+            'fiadores': []
+        }
+
+        # Extrair entidade da linha atual
+        linha = linhas[idx]
+        credito['entidade'] = linha.strip()[:50]
+
+        # Procurar produto nas próximas linhas
+        for j in range(idx+1, min(idx+5, len(linhas))):
+            linha_j = linhas[j]
+            if any(prod in linha_j.lower() for prod in ['habitação', 'automóvel', 'crédito pessoal', 'cartão']):
+                credito['produto'] = linha_j.strip()[:50]
+                break
+
+        # Procurar valores monetários
+        valores = re.findall(r'(\d[\d\s.,]+)\s*[€]?', ' '.join(linhas[idx:idx+10]))
+        if len(valores) >= 2:
+            credito['montante_divida'] = self._parse_montante(valores[0])
+            credito['prestacao_mensal'] = self._parse_montante(valores[-1])
+
+        if credito['entidade'] and credito['produto']:
+            return credito
+        return None
 
     def calcular_metricas(self, creditos, rendimento_mensal=2000):
         """Calcula métricas financeiras"""
@@ -521,25 +522,6 @@ class CRCAnalyzer:
                          color_discrete_map={'Regular': '#28a745', 'Incumprimento': '#dc3545'})
             fig4.update_layout(height=400, xaxis_tickangle=-45)
             graficos['prestacoes'] = json.dumps(fig4, cls=PlotlyJSONEncoder)
-
-        # 5. Timeline de créditos
-        df_timeline = df[df['data_fim'] != ''].copy()
-        if not df_timeline.empty:
-            try:
-                df_timeline['data_fim_dt'] = pd.to_datetime(df_timeline['data_fim'], format='%d/%m/%Y', errors='coerce')
-                df_timeline = df_timeline.dropna(subset=['data_fim_dt'])
-                if not df_timeline.empty:
-                    fig5 = px.timeline(df_timeline,
-                                     x_start='data_inicio',
-                                     x_end='data_fim',
-                                     y='produto',
-                                     color='situacao',
-                                     title='Timeline dos Créditos',
-                                     color_discrete_map={'Regular': '#28a745', 'Incumprimento': '#dc3545', 'Liquidado': '#6c757d'})
-                    fig5.update_layout(height=400)
-                    graficos['timeline'] = json.dumps(fig5, cls=PlotlyJSONEncoder)
-            except:
-                pass
 
         return graficos
 
