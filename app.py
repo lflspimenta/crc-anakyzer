@@ -28,6 +28,7 @@ class CRCAnalyzer:
         self.recomendacoes = []
 
     def extrair_dados_pdf(self, pdf_path):
+        """Extrai dados do PDF do CRC do Banco de Portugal"""
         dados_extraidos = {
             'titular': '',
             'data_consulta': '',
@@ -37,21 +38,29 @@ class CRCAnalyzer:
 
         try:
             with pdfplumber.open(pdf_path) as pdf:
-                texto_completo = ""
-                for page in pdf.pages:
-                    texto = page.extract_text()
-                    if texto:
-                        texto_completo += texto + "\n"
+                # Extrair titular da primeira página
+                primeira_pagina = pdf.pages[0]
+                texto_primeira = primeira_pagina.extract_text() or ""
+                dados_extraidos['titular'] = self._extrair_titular(texto_primeira)
+                dados_extraidos['data_consulta'] = self._extrair_data_consulta(texto_primeira)
 
-                dados_extraidos['titular'] = self._extrair_titular(texto_completo)
-                dados_extraidos['data_consulta'] = self._extrair_data_consulta(texto_completo)
+                # Extrair créditos de cada página
+                for i, page in enumerate(pdf.pages):
+                    texto = page.extract_text() or ""
 
-                tabelas = self._extrair_tabelas_pdfplumber(pdf)
+                    # Verificar se é página de crédito detalhado (não resumo)
+                    if 'Informação comunicada pela instituição' in texto or                        'Informação comunicada pela instituição' in texto:
+                        credito = self._extrair_credito_pagina(texto)
+                        if credito and credito['entidade']:
+                            dados_extraidos['creditos'].append(credito)
 
-                if tabelas and len(tabelas) > 0:
-                    dados_extraidos['creditos'] = self._parse_tabelas_creditos(tabelas)
-                else:
-                    dados_extraidos['creditos'] = self._extrair_creditos_texto(texto_completo)
+                # Se não encontrou créditos, tentar método alternativo
+                if not dados_extraidos['creditos']:
+                    for i, page in enumerate(pdf.pages):
+                        texto = page.extract_text() or ""
+                        credito = self._extrair_credito_texto_livre(texto)
+                        if credito and credito['entidade']:
+                            dados_extraidos['creditos'].append(credito)
 
         except Exception as e:
             print(f"Erro na extração: {e}")
@@ -59,55 +68,32 @@ class CRCAnalyzer:
         return dados_extraidos
 
     def _extrair_titular(self, texto):
-        padroes = [
-            r'(?:Titular|Nome|Cliente):?\s*([A-Z][a-zA-Z\s]+)(?=\n|Data|NIF)',
-            r'([A-Z][A-Z\s]+[A-Z])\s*(?:Data de Nascimento|NIF)',
-        ]
-        for padrao in padroes:
-            match = re.search(padrao, texto, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
+        """Extrai nome do titular do texto"""
+        # Formato: "Nome:CATIA CAROLINA BRANCO BARBOSA"
+        match = re.search(r'Nome[:\s]+([A-Z][A-Z\s]+[A-Z])', texto)
+        if match:
+            return match.group(1).strip()
+        # Fallback
+        match = re.search(r'Nome[:\s]+([\w\s]+)', texto)
+        if match:
+            return match.group(1).strip()
         return "Titular não identificado"
 
     def _extrair_data_consulta(self, texto):
-        padroes = [
-            r'Data(?:\s*da)?\s*Consulta:?\s*(\d{2}[/-]\d{2}[/-]\d{4})',
-            r'(?:Consulta|Emissão)\s*em:?\s*(\d{2}[/-]\d{2}[/-]\d{4})',
-            r'(\d{2}/\d{2}/\d{4})\s*(?:Mapa|CRC)',
-        ]
-        for padrao in padroes:
-            match = re.search(padrao, texto, re.IGNORECASE)
-            if match:
-                return match.group(1)
+        """Extrai data da consulta"""
+        # Formato: "Data de Emissão:08-03-2020 13:11:44"
+        match = re.search(r'Data de Emiss[ãa]o[:\s]+(\d{2}-\d{2}-\d{4})', texto)
+        if match:
+            data = match.group(1)
+            return data.replace('-', '/')
+        # Outros formatos
+        match = re.search(r'(\d{2}/\d{2}/\d{4})', texto)
+        if match:
+            return match.group(1)
         return datetime.now().strftime("%d/%m/%Y")
 
-    def _extrair_tabelas_pdfplumber(self, pdf):
-        todas_tabelas = []
-        for page in pdf.pages:
-            tabelas = page.extract_tables()
-            for tabela in tabelas:
-                if tabela and len(tabela) > 1:
-                    todas_tabelas.append(tabela)
-        return todas_tabelas
-
-    def _parse_tabelas_creditos(self, tabelas):
-        creditos = []
-        for tabela in tabelas:
-            if not tabela or len(tabela) < 2:
-                continue
-            header = tabela[0]
-            header_lower = [str(h).lower() if h else '' for h in header]
-            if any(keyword in ' '.join(header_lower) for keyword in 
-                   ['entidade', 'produto', 'montante', 'dívida', 'prestação', 'situação']):
-                for row in tabela[1:]:
-                    if len(row) < 3:
-                        continue
-                    credito = self._parse_linha_credito(row, header)
-                    if credito:
-                        creditos.append(credito)
-        return creditos
-
-    def _parse_linha_credito(self, row, header):
+    def _extrair_credito_pagina(self, texto):
+        """Extrai um crédito de uma página do CRC"""
         credito = {
             'entidade': '', 'produto': '', 'tipo_negociacao': '',
             'data_inicio': '', 'data_fim': '', 'montante_inicial': 0.0,
@@ -117,50 +103,124 @@ class CRCAnalyzer:
             'situacao': 'Regular', 'garantias': [], 'fiadores': []
         }
 
-        for i, (col_name, value) in enumerate(zip(header, row)):
-            if not col_name or not value:
-                continue
-            col_lower = str(col_name).lower().strip()
-            val_str = str(value).strip()
+        # Entidade - formato: "Informação comunicada pela instituição:BANCO BNP PARIBAS PERSONAL FINANCE,SA (0848)"
+        match = re.search(r'Informa[cç][ãa]o comunicada pela institui[cç][ãa]o[:\s]+(.+?)(?:\s*\(|
+)', texto)
+        if match:
+            credito['entidade'] = match.group(1).strip()
 
-            if any(k in col_lower for k in ['entidade', 'instituição', 'credor']):
-                credito['entidade'] = val_str
-            elif any(k in col_lower for k in ['produto', 'tipo', 'modalidade']):
-                credito['produto'] = val_str
-            elif any(k in col_lower for k in ['negociação', 'contrato', 'nº']):
-                credito['tipo_negociacao'] = val_str
-            elif any(k in col_lower for k in ['início', 'contratação', 'data início']):
-                credito['data_inicio'] = val_str
-            elif any(k in col_lower for k in ['fim', 'vencimento', 'data fim']):
-                credito['data_fim'] = val_str
-            elif any(k in col_lower for k in ['inicial', 'capital', 'montante inicial']):
-                credito['montante_inicial'] = self._parse_montante(val_str)
-            elif any(k in col_lower for k in ['dívida', 'saldo', 'montante em dívida', 'responsabilidade efetiva']):
-                credito['montante_divida'] = self._parse_montante(val_str)
-            elif any(k in col_lower for k in ['vencido', 'em incumprimento', 'vencimentos']):
-                credito['montante_vencido'] = self._parse_montante(val_str)
-            elif any(k in col_lower for k in ['abatido', 'perdido', 'abatido ao ativo']):
-                credito['montante_abatido'] = self._parse_montante(val_str)
-            elif any(k in col_lower for k in ['prestação', 'mensalidade', 'pagamento']):
-                credito['prestacao_mensal'] = self._parse_montante(val_str)
-            elif any(k in col_lower for k in ['taxa', 'juro', 'euribor', 'spread']):
-                credito['taxa_juro'] = self._parse_taxa(val_str)
-            elif any(k in col_lower for k in ['prazo', 'duração', 'tempo']):
-                prazo = self._parse_prazo(val_str)
-                if prazo:
-                    credito['prazo_total'] = prazo
-            elif any(k in col_lower for k in ['situação', 'estado', 'regularidade']):
-                credito['situacao'] = self._parse_situacao(val_str)
-            elif any(k in col_lower for k in ['garantia', 'código garantia']):
-                credito['garantias'] = self._parse_garantias(val_str)
-            elif any(k in col_lower for k in ['fiador', 'avalista', 'garante']):
-                credito['fiadores'] = self._parse_fiadores(val_str)
+        # Produto financeiro
+        match = re.search(r'Produto financeiro[:\s]+(.+?)(?:
+|Tipo de neg)', texto)
+        if match:
+            credito['produto'] = match.group(1).strip()
 
-        if credito['entidade'] and credito['produto']:
-            return credito
-        return None
+        # Tipo de negociação
+        match = re.search(r'Tipo de negocia[cç][ãa]o[:\s]+(.+?)(?:
+|Início)', texto)
+        if match:
+            credito['tipo_negociacao'] = match.group(1).strip()
+
+        # Data de início
+        match = re.search(r'Início[:\s]+(\d{4}-\d{2}-\d{2})', texto)
+        if match:
+            data = match.group(1)
+            credito['data_inicio'] = f"{data[8:10]}/{data[5:7]}/{data[0:4]}"
+
+        # Data de fim
+        match = re.search(r'Fim[:\s]+(\d{4}-\d{2}-\d{2})', texto)
+        if match:
+            data = match.group(1)
+            credito['data_fim'] = f"{data[8:10]}/{data[5:7]}/{data[0:4]}"
+
+        # Total em dívida
+        match = re.search(r'Total em d[íi]vida[:\s]+([\d\.,]+)\s*€', texto)
+        if match:
+            credito['montante_divida'] = self._parse_montante(match.group(1))
+
+        # Em incumprimento
+        match = re.search(r'em incumprimento[:\s]+([\d\.,]+)\s*€', texto)
+        if match:
+            val = self._parse_montante(match.group(1))
+            if val > 0:
+                credito['situacao'] = 'Incumprimento'
+
+        # Vencido
+        match = re.search(r'Vencido[:\s]+([\d\.,]+)\s*€', texto)
+        if match:
+            credito['montante_vencido'] = self._parse_montante(match.group(1))
+
+        # Abatido ao ativo
+        match = re.search(r'Abatido ao ativo[:\s]+([\d\.,]+)\s*€', texto)
+        if match:
+            credito['montante_abatido'] = self._parse_montante(match.group(1))
+
+        # Prestação
+        match = re.search(r'Presta[cç][ãa]o[:\s]+([\d\.,]+)\s*€', texto)
+        if match:
+            credito['prestacao_mensal'] = self._parse_montante(match.group(1))
+
+        # Montante potencial (responsabilidade potencial)
+        match = re.search(r'Potencial[:\s]+([\d\.,]+)\s*€', texto)
+        if match:
+            credito['montante_inicial'] = self._parse_montante(match.group(1))
+
+        # Período de free-float (para cartões)
+        if 'free-float' in texto.lower():
+            if 'com período de free-float' in texto.lower():
+                credito['produto'] = 'Cartão de crédito - com período de free-float'
+            elif 'sem período de free-float' in texto.lower():
+                credito['produto'] = 'Cartão de crédito - sem período de free-float'
+
+        # Em litígio judicial
+        if 'Em litígio judicial' in texto or 'Em litígio judicial' in texto:
+            credito['situacao'] = 'Litígio Judicial'
+
+        return credito
+
+    def _extrair_credito_texto_livre(self, texto):
+        """Método alternativo de extração"""
+        credito = {
+            'entidade': '', 'produto': '', 'tipo_negociacao': '',
+            'data_inicio': '', 'data_fim': '', 'montante_inicial': 0.0,
+            'montante_divida': 0.0, 'montante_vencido': 0.0,
+            'montante_abatido': 0.0, 'prestacao_mensal': 0.0,
+            'taxa_juro': 0.0, 'prazo_total': 0, 'prazo_restante': 0,
+            'situacao': 'Regular', 'garantias': [], 'fiadores': []
+        }
+
+        # Procurar por padrões no texto
+        linhas = texto.split('\n')
+
+        for i, linha in enumerate(linhas):
+            # Entidade
+            if 'BANCO' in linha.upper() and 'instituição' in linha.lower():
+                match = re.search(r'BANCO\s+[^
+]+', linha)
+                if match:
+                    credito['entidade'] = match.group(0).strip()
+
+            # Produto
+            if 'Produto financeiro' in linha:
+                match = re.search(r'Produto financeiro[:\s]+(.+)', linha)
+                if match:
+                    credito['produto'] = match.group(1).strip()
+
+            # Valores monetários
+            valores = re.findall(r'([\d\.,]+)\s*€', linha)
+            if valores:
+                # Atribuir valores baseado no contexto
+                if 'dívida' in linha.lower():
+                    credito['montante_divida'] = self._parse_montante(valores[0])
+                elif 'prestação' in linha.lower():
+                    credito['prestacao_mensal'] = self._parse_montante(valores[0])
+                elif 'vencido' in linha.lower():
+                    credito['montante_vencido'] = self._parse_montante(valores[0])
+
+        return credito
 
     def _parse_montante(self, valor_str):
+        """Converte string de montante para float"""
         if not valor_str:
             return 0.0
         limpo = re.sub(r'[^\d,\.]', '', str(valor_str))
@@ -170,80 +230,8 @@ class CRCAnalyzer:
         except:
             return 0.0
 
-    def _parse_taxa(self, taxa_str):
-        if not taxa_str:
-            return 0.0
-        match = re.search(r'(\d+[.,]?\d*)\s*%', str(taxa_str))
-        if match:
-            try:
-                return float(match.group(1).replace(',', '.'))
-            except:
-                return 0.0
-        return 0.0
-
-    def _parse_prazo(self, prazo_str):
-        if not prazo_str:
-            return 0
-        match = re.search(r'(\d+)', str(prazo_str))
-        if match:
-            return int(match.group(1))
-        return 0
-
-    def _parse_situacao(self, sit_str):
-        sit_lower = str(sit_str).lower()
-        if any(k in sit_lower for k in ['incumprimento', 'vencido', 'irregular', 'atraso', 'default']):
-            return 'Incumprimento'
-        elif any(k in sit_lower for k in ['regular', 'normal', 'em dia']):
-            return 'Regular'
-        elif any(k in sit_lower for k in ['liquidado', 'pago', 'encerrado']):
-            return 'Liquidado'
-        return 'Regular'
-
-    def _parse_garantias(self, gar_str):
-        if not gar_str:
-            return []
-        return [g.strip() for g in str(gar_str).split(',') if g.strip()]
-
-    def _parse_fiadores(self, fia_str):
-        if not fia_str:
-            return []
-        return [f.strip() for f in str(fia_str).split(',') if f.strip()]
-
-    def _extrair_creditos_texto(self, texto):
-        creditos = []
-        linhas = texto.split('\n')
-        for i, linha in enumerate(linhas):
-            if any(entidade in linha for entidade in ['Banco', 'Caixa', 'Millennium', 'Novo Banco', 'Santander', 'CGD', 'BCP']):
-                credito = self._parse_bloco_credito(linhas, i)
-                if credito:
-                    creditos.append(credito)
-        return creditos
-
-    def _parse_bloco_credito(self, linhas, idx):
-        credito = {
-            'entidade': '', 'produto': '', 'tipo_negociacao': '',
-            'data_inicio': '', 'data_fim': '', 'montante_inicial': 0.0,
-            'montante_divida': 0.0, 'montante_vencido': 0.0,
-            'montante_abatido': 0.0, 'prestacao_mensal': 0.0,
-            'taxa_juro': 0.0, 'prazo_total': 0, 'prazo_restante': 0,
-            'situacao': 'Regular', 'garantias': [], 'fiadores': []
-        }
-        linha = linhas[idx]
-        credito['entidade'] = linha.strip()[:50]
-        for j in range(idx+1, min(idx+5, len(linhas))):
-            linha_j = linhas[j]
-            if any(prod in linha_j.lower() for prod in ['habitação', 'automóvel', 'crédito pessoal', 'cartão']):
-                credito['produto'] = linha_j.strip()[:50]
-                break
-        valores = re.findall(r'(\d[\d\s.,]+)\s*[€]?', ' '.join(linhas[idx:idx+10]))
-        if len(valores) >= 2:
-            credito['montante_divida'] = self._parse_montante(valores[0])
-            credito['prestacao_mensal'] = self._parse_montante(valores[-1])
-        if credito['entidade'] and credito['produto']:
-            return credito
-        return None
-
     def calcular_metricas(self, creditos, rendimento_mensal=2000):
+        """Calcula métricas financeiras"""
         if not creditos:
             return {}
         total_divida = sum(c['montante_divida'] for c in creditos)
@@ -286,6 +274,7 @@ class CRCAnalyzer:
         }
 
     def gerar_recomendacoes(self, creditos, metricas):
+        """Gera recomendações personalizadas"""
         recomendacoes = []
         if metricas['taxa_esforco'] > 40:
             recomendacoes.append({
@@ -334,6 +323,7 @@ class CRCAnalyzer:
         return recomendacoes
 
     def criar_graficos(self, creditos, metricas):
+        """Cria gráficos interativos com Plotly"""
         graficos = {}
         if not creditos:
             return graficos
@@ -385,7 +375,7 @@ class CRCAnalyzer:
             fig4 = px.bar(df_ativos, x='entidade', y='prestacao_mensal', color='situacao',
                          title='Prestações Mensais por Entidade',
                          labels={'prestacao_mensal': 'Prestação (€)', 'entidade': 'Entidade'},
-                         color_discrete_map={'Regular': '#28a745', 'Incumprimento': '#dc3545'})
+                         color_discrete_map={'Regular': '#28a745', 'Incumprimento': '#dc3545', 'Litígio Judicial': '#fd7e14'})
             fig4.update_layout(height=400, xaxis_tickangle=-45)
             graficos['prestacoes'] = json.dumps(fig4, cls=PlotlyJSONEncoder)
 
@@ -409,7 +399,6 @@ def upload_file():
     if file.filename == '':
         return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
     if file and allowed_file(file.filename):
-        # Criar pasta uploads se não existir
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -445,9 +434,10 @@ def upload_file():
             os.remove(filepath)
             return jsonify(response)
         except Exception as e:
+            import traceback
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return jsonify({'error': f'Erro ao processar PDF: {str(e)}'}), 500
+            return jsonify({'error': f'Erro ao processar PDF: {str(e)}', 'trace': traceback.format_exc()}), 500
     return jsonify({'error': 'Formato de arquivo inválido. Use PDF.'}), 400
 
 
