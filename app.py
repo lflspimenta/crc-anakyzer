@@ -5,6 +5,8 @@ import os
 import re
 import json
 from datetime import datetime
+import pandas as pd
+import pdfplumber
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.utils import PlotlyJSONEncoder
@@ -26,7 +28,6 @@ class CRCAnalyzer:
         self.recomendacoes = []
 
     def extrair_dados_pdf(self, pdf_path):
-        """Extrai dados do PDF do CRC usando pdfplumber"""
         dados_extraidos = {
             'titular': '',
             'data_consulta': '',
@@ -35,7 +36,6 @@ class CRCAnalyzer:
         }
 
         try:
-            import pdfplumber
             with pdfplumber.open(pdf_path) as pdf:
                 texto_completo = ""
                 for page in pdf.pages:
@@ -338,41 +338,29 @@ class CRCAnalyzer:
         if not creditos:
             return graficos
 
-        # Agrupar por entidade
-        entidades = {}
-        for c in creditos:
-            ent = c['entidade']
-            entidades[ent] = entidades.get(ent, 0) + c['montante_divida']
-        entidades_sorted = sorted(entidades.items(), key=lambda x: x[1])
+        df = pd.DataFrame(creditos)
 
-        fig1 = go.Figure(go.Bar(
-            x=[v for _, v in entidades_sorted],
-            y=[k for k, _ in entidades_sorted],
-            orientation='h',
-            marker=dict(color=[v for _, v in entidades_sorted], colorscale='Reds')
-        ))
-        fig1.update_layout(title='Dívida Total por Entidade', height=400,
-                          xaxis_title='Montante em Dívida (€)', yaxis_title='Entidade')
+        # 1. Dívida por Entidade
+        df_entidades = df.groupby('entidade')['montante_divida'].sum().reset_index()
+        df_entidades = df_entidades.sort_values('montante_divida', ascending=True)
+        fig1 = px.bar(df_entidades, x='montante_divida', y='entidade', orientation='h',
+                     title='Dívida Total por Entidade',
+                     labels={'montante_divida': 'Montante em Dívida (€)', 'entidade': 'Entidade'},
+                     color='montante_divida', color_continuous_scale='Reds')
+        fig1.update_layout(height=400)
         graficos['divida_entidade'] = json.dumps(fig1, cls=PlotlyJSONEncoder)
 
-        # Pizza por produto
-        produtos = {}
-        for c in creditos:
-            prod = c['produto']
-            produtos[prod] = produtos.get(prod, 0) + c['montante_divida']
-
-        fig2 = go.Figure(go.Pie(
-            values=[v for v in produtos.values()],
-            labels=[k for k in produtos.keys()],
-            hole=0.4
-        ))
-        fig2.update_layout(title='Distribuição da Dívida por Tipo de Produto', height=400)
+        # 2. Pizza por Produto
+        df_produtos = df.groupby('produto')['montante_divida'].sum().reset_index()
+        fig2 = px.pie(df_produtos, values='montante_divida', names='produto',
+                     title='Distribuição da Dívida por Tipo de Produto', hole=0.4,
+                     color_discrete_sequence=px.colors.sequential.RdBu)
+        fig2.update_layout(height=400)
         graficos['divida_produto'] = json.dumps(fig2, cls=PlotlyJSONEncoder)
 
-        # Gauge taxa esforço
+        # 3. Gauge Taxa de Esforço
         fig3 = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=metricas['taxa_esforco'],
+            mode="gauge+number+delta", value=metricas['taxa_esforco'],
             domain={'x': [0, 1], 'y': [0, 1]},
             title={'text': "Taxa de Esforço (%)", 'font': {'size': 24}},
             delta={'reference': 30, 'increasing': {'color': "#dc3545"}},
@@ -391,16 +379,14 @@ class CRCAnalyzer:
         fig3.update_layout(height=350)
         graficos['gauge_esforco'] = json.dumps(fig3, cls=PlotlyJSONEncoder)
 
-        # Barras prestações
-        ativos = [c for c in creditos if c['situacao'] != 'Liquidado']
-        if ativos:
-            fig4 = go.Figure(go.Bar(
-                x=[c['entidade'] for c in ativos],
-                y=[c['prestacao_mensal'] for c in ativos],
-                marker_color=['#28a745' if c['situacao'] == 'Regular' else '#dc3545' for c in ativos]
-            ))
-            fig4.update_layout(title='Prestações Mensais por Entidade', height=400,
-                              xaxis_title='Entidade', yaxis_title='Prestação (€)')
+        # 4. Prestações Mensais
+        df_ativos = df[df['situacao'] != 'Liquidado'].copy()
+        if not df_ativos.empty:
+            fig4 = px.bar(df_ativos, x='entidade', y='prestacao_mensal', color='situacao',
+                         title='Prestações Mensais por Entidade',
+                         labels={'prestacao_mensal': 'Prestação (€)', 'entidade': 'Entidade'},
+                         color_discrete_map={'Regular': '#28a745', 'Incumprimento': '#dc3545'})
+            fig4.update_layout(height=400, xaxis_tickangle=-45)
             graficos['prestacoes'] = json.dumps(fig4, cls=PlotlyJSONEncoder)
 
         return graficos
