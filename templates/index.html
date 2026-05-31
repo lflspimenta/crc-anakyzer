@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRC Analyzer - Análise de Mapa de Responsabilidades de Crédito</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #1a5276;
+            --secondary-color: #2874a6;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --danger-color: #dc3545;
+            --info-color: #17a2b8;
+            --light-bg: #f8f9fa;
+            --dark-bg: #2c3e50;
+        }
+
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .main-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            margin: 30px auto;
+            max-width: 1400px;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .upload-section {
+            padding: 50px 40px;
+            background: var(--light-bg);
+        }
+
+        .upload-area {
+            border: 3px dashed var(--secondary-color);
+            border-radius: 15px;
+            padding: 60px 40px;
+            text-align: center;
+            background: white;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .upload-area:hover {
+            border-color: var(--primary-color);
+            background: #f0f7ff;
+            transform: translateY(-2px);
+        }
+
+        .upload-area.dragover {
+            border-color: var(--success-color);
+            background: #e8f5e9;
+        }
+
+        .upload-area i {
+            font-size: 4rem;
+            color: var(--secondary-color);
+            margin-bottom: 20px;
+        }
+
+        .upload-area h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .rendimento-input {
+            max-width: 300px;
+            margin: 20px auto;
+        }
+
+        .btn-analyze {
+            background: linear-gradient(135deg, var(--success-color) 0%, #218838 100%);
+            border: none;
+            padding: 15px 50px;
+            font-size: 1.2rem;
+            font-weight: 600;
+            border-radius: 50px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
+        }
+
+        .btn-analyze:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(40, 167, 69, 0.6);
+        }
+
+        .btn-analyze:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+
+        .loading-overlay.active {
+            display: flex;
+        }
+
+        .spinner {
+            width: 80px;
+            height: 80px;
+            border: 6px solid #f3f3f3;
+            border-top: 6px solid var(--secondary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results-section {
+            display: none;
+            padding: 40px;
+        }
+
+        .results-section.active {
+            display: block;
+        }
+
+        .score-card {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .score-circle {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 3rem;
+            font-weight: 700;
+            color: white;
+            position: relative;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .score-label {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .score-desc {
+            color: #6c757d;
+            font-size: 0.95rem;
+        }
+
+        .metric-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+            transition: transform 0.3s ease;
+            height: 100%;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .metric-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+        }
+
+        .metric-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .recommendation-card {
+            border-left: 5px solid;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: white;
+            box-shadow: 0 3px 15px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+        }
+
+        .recommendation-card:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.12);
+        }
+
+        .recommendation-card.urgente {
+            border-left-color: var(--danger-color);
+            background: #fff5f5;
+        }
+
+        .recommendation-card.alerta {
+            border-left-color: var(--warning-color);
+            background: #fffbeb;
+        }
+
+        .recommendation-card.info {
+            border-left-color: var(--info-color);
+            background: #f0f9ff;
+        }
+
+        .recommendation-card.sucesso {
+            border-left-color: var(--success-color);
+            background: #f0fff4;
+        }
+
+        .rec-title {
+            font-weight: 700;
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .rec-desc {
+            color: #495057;
+            margin-bottom: 15px;
+            line-height: 1.6;
+        }
+
+        .rec-action {
+            display: inline-block;
+            background: var(--primary-color);
+            color: white;
+            padding: 8px 20px;
+            border-radius: 25px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-right: 10px;
+        }
+
+        .rec-impact {
+            display: inline-block;
+            color: var(--success-color);
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .chart-container {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+            margin-bottom: 30px;
+        }
+
+        .table-creditos {
+            background: white;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+        }
+
+        .table-creditos th {
+            background: var(--primary-color);
+            color: white;
+            font-weight: 600;
+            padding: 15px;
+        }
+
+        .table-creditos td {
+            padding: 12px 15px;
+            vertical-align: middle;
+        }
+
+        .table-creditos tr:hover {
+            background: #f8f9fa;
+        }
+
+        .badge-situacao {
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .badge-regular {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-incumprimento {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .badge-liquidado {
+            background: #e2e3e5;
+            color: #383d41;
+        }
+
+        .demo-badge {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a6f);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .footer {
+            background: var(--dark-bg);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .footer p {
+            margin: 0;
+            opacity: 0.8;
+            font-size: 0.9rem;
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .alert-custom {
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 25px;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8rem;
+            }
+            .upload-section {
+                padding: 30px 20px;
+            }
+            .metric-value {
+                font-size: 1.4rem;
+            }
+        }
+    
+        .btn-browse {
+            border: 2px dashed var(--secondary-color);
+            background: white;
+            color: var(--secondary-color);
+            padding: 15px 40px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .btn-browse:hover {
+            background: var(--secondary-color);
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(40, 116, 166, 0.3);
+        }
+
+        .upload-hint {
+            color: #6c757d;
+            font-size: 0.9rem;
+            margin-top: 10px;
+        }
+
+        .upload-hint i {
+            color: var(--secondary-color);
+        }
+
+        .file-info {
+            background: #e8f4f8;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+            display: none;
+        }
+
+        .file-info.active {
+            display: block;
+        }
+
+        .file-info i {
+            color: var(--success-color);
+            font-size: 1.5rem;
+            margin-right: 10px;
+        }
+</style>
+</head>
+<body>
+    <div class="main-container">
+        <!-- Header -->
+        <div class="header">
+            <h1><i class="fas fa-chart-line"></i> CRC Analyzer</h1>
+            <p>Análise Inteligente do Mapa de Responsabilidades de Crédito do Banco de Portugal</p>
+        </div>
+
+        
+        <!-- Upload Section -->
+        <div class="upload-section">
+            <div class="row justify-content-center">
+                <div class="col-lg-8">
+
+                    <!-- Área de Upload Principal -->
+                    <div class="upload-area" id="uploadArea">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <h3>Upload do Mapa de Responsabilidades de Crédito</h3>
+                        <p class="text-muted mb-3">Obtenha o seu Mapa em <a href="https://www.bportugal.pt" target="_blank">bportugal.pt</a></p>
+
+                        <!-- Botão explícito de procurar ficheiro -->
+                        <button type="button" class="btn-browse" id="btnBrowse">
+                            <i class="fas fa-folder-open"></i> Procurar no computador
+                        </button>
+
+                        <div class="upload-hint">
+                            <i class="fas fa-hand-pointer"></i> Clique no botão acima ou <strong>arraste o PDF</strong> diretamente para esta área
+                        </div>
+
+                        <input type="file" id="fileInput" class="file-input" accept=".pdf">
+
+                        <!-- Info do ficheiro selecionado -->
+                        <div class="file-info" id="fileInfo">
+                            <i class="fas fa-file-pdf"></i>
+                            <span id="fileName" class="fw-bold text-primary"></span>
+                            <span id="fileSize" class="text-muted small ms-2"></span>
+                        </div>
+                    </div>
+
+                    <!-- Input de Rendimento -->
+                    <div class="text-center mt-4">
+                        <div class="rendimento-input">
+                            <label class="form-label fw-bold">Rendimento Líquido Mensal (€)</label>
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="fas fa-euro-sign"></i></span>
+                                <input type="number" class="form-control form-control-lg" id="rendimentoInput" 
+                                       placeholder="2000" value="2000" min="0" step="100">
+                            </div>
+                        </div>
+                        <button class="btn-analyze mt-3" id="btnAnalyze" disabled>
+                            <i class="fas fa-search-dollar"></i> Analisar Mapa de Crédito
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+<!-- Results Section -->
+        <div class="results-section" id="resultsSection">
+            <!-- Demo Mode Alert -->
+            <div id="demoAlert" class="text-center" style="display: none;">
+                <div class="demo-badge">
+                    <i class="fas fa-info-circle"></i>
+                    Modo de Demonstração - Dados simulados para teste
+                </div>
+            </div>
+
+            <!-- Info Header -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="alert alert-custom alert-primary d-flex align-items-center">
+                        <i class="fas fa-user-circle fa-2x me-3"></i>
+                        <div>
+                            <strong id="titularName">Titular</strong>
+                            <div class="text-muted" id="dataConsulta">Data da consulta</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Score Card -->
+            <div class="row justify-content-center mb-5">
+                <div class="col-md-6">
+                    <div class="score-card">
+                        <div class="score-circle" id="scoreCircle">
+                            <span id="scoreValue">--</span>
+                        </div>
+                        <div class="score-label" id="scoreLabel">Aguardando análise...</div>
+                        <div class="score-desc" id="scoreDesc">Faça upload do PDF para obter a pontuação</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metrics Grid -->
+            <div class="row g-4 mb-5">
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-danger bg-opacity-10 text-danger">
+                            <i class="fas fa-hand-holding-usd"></i>
+                        </div>
+                        <div class="metric-value text-danger" id="metricDivida">--</div>
+                        <div class="metric-label">Total em Dívida</div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-warning bg-opacity-10 text-warning">
+                            <i class="fas fa-calendar-alt"></i>
+                        </div>
+                        <div class="metric-value text-warning" id="metricPrestacoes">--</div>
+                        <div class="metric-label">Prestações Mensais</div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-info bg-opacity-10 text-info">
+                            <i class="fas fa-percentage"></i>
+                        </div>
+                        <div class="metric-value text-info" id="metricEsforco">--</div>
+                        <div class="metric-label">Taxa de Esforço</div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-success bg-opacity-10 text-success">
+                            <i class="fas fa-credit-card"></i>
+                        </div>
+                        <div class="metric-value text-success" id="metricCreditos">--</div>
+                        <div class="metric-label">Créditos Ativos</div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-danger bg-opacity-10 text-danger">
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                        <div class="metric-value text-danger" id="metricIncumprimentos">--</div>
+                        <div class="metric-label">Incumprimentos</div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-secondary bg-opacity-10 text-secondary">
+                            <i class="fas fa-balance-scale"></i>
+                        </div>
+                        <div class="metric-value text-secondary" id="metricEndividamento">--</div>
+                        <div class="metric-label">Endividamento/Ano</div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-warning bg-opacity-10 text-warning">
+                            <i class="fas fa-money-bill-wave"></i>
+                        </div>
+                        <div class="metric-value text-warning" id="metricVencido">--</div>
+                        <div class="metric-label">Montante Vencido</div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-lg-3">
+                    <div class="metric-card">
+                        <div class="metric-icon bg-dark bg-opacity-10 text-dark">
+                            <i class="fas fa-skull-crossbones"></i>
+                        </div>
+                        <div class="metric-value text-dark" id="metricAbatido">--</div>
+                        <div class="metric-label">Abatido ao Ativo</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts -->
+            <div class="row mb-5">
+                <div class="col-lg-6">
+                    <div class="chart-container">
+                        <h4 class="section-title"><i class="fas fa-chart-pie"></i> Distribuição por Produto</h4>
+                        <div id="chartProduto"></div>
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="chart-container">
+                        <h4 class="section-title"><i class="fas fa-chart-bar"></i> Dívida por Entidade</h4>
+                        <div id="chartEntidade"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mb-5">
+                <div class="col-lg-6">
+                    <div class="chart-container">
+                        <h4 class="section-title"><i class="fas fa-tachometer-alt"></i> Taxa de Esforço</h4>
+                        <div id="chartGauge"></div>
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="chart-container">
+                        <h4 class="section-title"><i class="fas fa-money-check-alt"></i> Prestações Mensais</h4>
+                        <div id="chartPrestacoes"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recommendations -->
+            <div class="mb-5">
+                <h4 class="section-title"><i class="fas fa-lightbulb"></i> Recomendações Personalizadas</h4>
+                <div id="recommendationsContainer"></div>
+            </div>
+
+            <!-- Credit Details Table -->
+            <div class="mb-5">
+                <h4 class="section-title"><i class="fas fa-list-alt"></i> Detalhe dos Créditos</h4>
+                <div class="table-responsive table-creditos">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Entidade</th>
+                                <th>Produto</th>
+                                <th>Montante Inicial</th>
+                                <th>Dívida Atual</th>
+                                <th>Prestação</th>
+                                <th>Taxa</th>
+                                <th>Situação</th>
+                                <th>Garantias</th>
+                            </tr>
+                        </thead>
+                        <tbody id="creditosTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p><i class="fas fa-shield-alt"></i> Dados processados localmente. Nenhuma informação é armazenada em servidores.</p>
+            <p class="mt-2">Esta análise é meramente informativa e não substitui aconselhamento financeiro profissional.</p>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <h3 class="text-white">A analisar o Mapa de Responsabilidades...</h3>
+        <p class="text-white-50">A extrair dados e calcular métricas financeiras</p>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
