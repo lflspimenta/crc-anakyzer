@@ -409,6 +409,8 @@ def upload_file():
     if file.filename == '':
         return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
     if file and allowed_file(file.filename):
+        # Criar pasta uploads se não existir
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
@@ -479,6 +481,8 @@ def gerar_dados_demo():
     ]
 
 
+# Criar pasta uploads na inicialização
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
 if __name__ == '__main__':
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     app.run(debug=True, host='0.0.0.0', port=5000)
