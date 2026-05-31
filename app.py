@@ -2,7 +2,6 @@
 from flask import Flask, render_template, request, jsonify
 from werkzeug.utils import secure_filename
 import os
-import re
 import json
 from datetime import datetime
 import pandas as pd
@@ -37,18 +36,14 @@ class CRCAnalyzer:
 
         try:
             with pdfplumber.open(pdf_path) as pdf:
-                # Extrair titular da primeira pagina
                 primeira_pagina = pdf.pages[0]
                 texto_primeira = primeira_pagina.extract_text() or ""
                 dados_extraidos['titular'] = self._extrair_titular(texto_primeira)
                 dados_extraidos['data_consulta'] = self._extrair_data_consulta(texto_primeira)
 
-                # Processar cada pagina para extrair creditos
                 for i, page in enumerate(pdf.pages):
                     texto = page.extract_text() or ""
-
-                    # Verificar se é pagina de credito detalhado
-                    if 'Informação comunicada pela instituição' in texto or                        'Informacao comunicada pela instituicao' in texto:
+                    if 'Informacao comunicada' in texto or 'Informacao' in texto:
                         credito = self._extrair_credito_pagina(texto)
                         if credito and credito['entidade']:
                             dados_extraidos['creditos'].append(credito)
@@ -59,16 +54,22 @@ class CRCAnalyzer:
         return dados_extraidos
 
     def _extrair_titular(self, texto):
-        match = re.search(r'Nome[:\s]+([A-Z][A-Z\s]+[A-Z])', texto)
-        if match:
-            return match.group(1).strip()
+        idx = texto.find('Nome:')
+        if idx >= 0:
+            linha = texto[idx:idx+100]
+            partes = linha.split(':')
+            if len(partes) > 1:
+                return partes[1].strip()
         return "Titular nao identificado"
 
     def _extrair_data_consulta(self, texto):
-        match = re.search(r'Data de Emiss[ãa]o[:\s]+(\d{2}-\d{2}-\d{4})', texto)
-        if match:
-            data = match.group(1)
-            return data.replace('-', '/')
+        idx = texto.find('Data de Emiss')
+        if idx >= 0:
+            linha = texto[idx:idx+50]
+            partes = linha.split(':')
+            if len(partes) > 1:
+                data = partes[1].strip()[:10]
+                return data.replace('-', '/')
         return datetime.now().strftime("%d/%m/%Y")
 
     def _extrair_credito_pagina(self, texto):
@@ -81,102 +82,114 @@ class CRCAnalyzer:
             'situacao': 'Regular', 'garantias': [], 'fiadores': []
         }
 
-        # 1. Extrair entidade
-        match = re.search(r'Informac[çc][ãa]o comunicada pela instituic[çc][ãa]o[:\s]+([^
-]+)', texto)
-        if match:
-            credito['entidade'] = match.group(1).strip()
+        linhas = texto.split('\n')
 
-        # 2. Extrair produto - procurar apos "Produto financeiro"
-        # O produto pode estar em varias linhas apos o cabecalho
-        linhas = texto.split('
-')
         for i, linha in enumerate(linhas):
-            if 'Produto financeiro' in linha:
-                # O produto esta nas proximas linhas, antes de "Tipo de negociacao"
-                for j in range(i+1, min(i+5, len(linhas))):
-                    if 'Tipo de negociacao' in linhas[j]:
-                        break
-                    if linhas[j].strip() and 'Tipo de responsabilidade' not in linhas[j]:
-                        credito['produto'] = linhas[j].strip()
-                        break
+            linha = linha.strip()
 
-            if 'Tipo de negociac' in linha and 'Tipo de negociacao' not in linha:
-                # Ja encontramos o tipo de negociacao, o produto deve estar antes
-                pass
+            # Entidade
+            if 'Informacao comunicada pela instituicao' in linha:
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    credito['entidade'] = partes[1].strip()
 
-        # 3. Extrair tipo de negociacao
-        for i, linha in enumerate(linhas):
-            if 'Tipo de negociac' in linha and 'financeiro' not in linha:
+            # Produto financeiro
+            elif 'Produto financeiro' in linha:
                 if i+1 < len(linhas):
                     val = linhas[i+1].strip()
-                    if val and 'Inicio' not in val and 'Início' not in val:
+                    if val and 'Tipo de negociacao' not in val:
+                        credito['produto'] = val
+
+            # Tipo de negociacao
+            elif 'Tipo de negociacao' in linha:
+                if i+1 < len(linhas):
+                    val = linhas[i+1].strip()
+                    if val and 'Inicio' not in val and 'Inicio' not in val:
                         credito['tipo_negociacao'] = val
-                        break
 
-        # 4. Extrair datas
-        match = re.search(r'(\d{4}-\d{2}-\d{2})', texto)
-        if match:
-            data = match.group(1)
-            credito['data_inicio'] = f"{data[8:10]}/{data[5:7]}/{data[0:4]}"
+            # Inicio
+            elif 'Inicio:' in linha or (linha.startswith('Inicio') and ':' in linha):
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    data = partes[1].strip()
+                    if len(data) >= 10 and data[4] == '-':
+                        credito['data_inicio'] = data[8:10] + '/' + data[5:7] + '/' + data[0:4]
 
-        # Procurar segunda data (fim)
-        datas = re.findall(r'(\d{4}-\d{2}-\d{2})', texto)
-        if len(datas) >= 2:
-            data = datas[1]
-            credito['data_fim'] = f"{data[8:10]}/{data[5:7]}/{data[0:4]}"
+            # Fim
+            elif 'Fim:' in linha or (linha.startswith('Fim') and ':' in linha):
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    data = partes[1].strip()
+                    if len(data) >= 10 and data[4] == '-':
+                        credito['data_fim'] = data[8:10] + '/' + data[5:7] + '/' + data[0:4]
 
-        # 5. Extrair valores monetarios
-        # Total em divida
-        match = re.search(r'Total em d[íi]vida.*?([\d\.,]+)\s*€', texto, re.DOTALL)
-        if match:
-            credito['montante_divida'] = self._parse_montante(match.group(1))
+            # Total em divida
+            elif 'Total em divida' in linha:
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    val_str = partes[1].replace('EUR', '').replace('E', '').strip()
+                    credito['montante_divida'] = self._parse_montante(val_str)
 
-        # Vencido
-        match = re.search(r'Vencido.*?([\d\.,]+)\s*€', texto, re.DOTALL)
-        if match:
-            credito['montante_vencido'] = self._parse_montante(match.group(1))
+            # Vencido
+            elif 'Vencido' in linha and 'Abatido' not in linha:
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    val_str = partes[1].replace('EUR', '').replace('E', '').strip()
+                    credito['montante_vencido'] = self._parse_montante(val_str)
 
-        # Abatido ao ativo
-        match = re.search(r'Abatido ao ativo.*?([\d\.,]+)\s*€', texto, re.DOTALL)
-        if match:
-            credito['montante_abatido'] = self._parse_montante(match.group(1))
+            # Abatido ao ativo
+            elif 'Abatido ao ativo' in linha:
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    val_str = partes[1].replace('EUR', '').replace('E', '').strip()
+                    credito['montante_abatido'] = self._parse_montante(val_str)
 
-        # Potencial (responsabilidade potencial)
-        match = re.search(r'Potencial.*?([\d\.,]+)\s*€', texto, re.DOTALL)
-        if match:
-            credito['montante_inicial'] = self._parse_montante(match.group(1))
+            # Potencial
+            elif 'Potencial' in linha and 'Total' not in linha:
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    val_str = partes[1].replace('EUR', '').replace('E', '').strip()
+                    credito['montante_inicial'] = self._parse_montante(val_str)
 
-        # Prestacao
-        match = re.search(r'Prestac[çc][ãa]o.*?([\d\.,]+)\s*€', texto, re.DOTALL)
-        if match:
-            credito['prestacao_mensal'] = self._parse_montante(match.group(1))
+            # Prestacao
+            elif 'Prestacao' in linha:
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    val_str = partes[1].replace('EUR', '').replace('E', '').strip()
+                    credito['prestacao_mensal'] = self._parse_montante(val_str)
 
-        # 6. Extrair situacao
-        if 'Em liti' in texto or 'litigio' in texto.lower():
-            credito['situacao'] = 'Litigio Judicial'
-        elif 'incumprimento' in texto.lower():
-            # Verificar se tem valor > 0
-            match = re.search(r'incumprimento.*?([\d\.,]+)\s*€', texto, re.DOTALL)
-            if match:
-                val = self._parse_montante(match.group(1))
-                if val > 0:
-                    credito['situacao'] = 'Incumprimento'
+            # Situacao
+            elif 'Em litigio judicial' in linha or 'Em liti' in linha:
+                credito['situacao'] = 'Litigio Judicial'
+            elif 'incumprimento' in linha.lower():
+                partes = linha.split(':')
+                if len(partes) > 1:
+                    val_str = partes[1].replace('EUR', '').replace('E', '').strip()
+                    val = self._parse_montante(val_str)
+                    if val > 0:
+                        credito['situacao'] = 'Incumprimento'
 
-        # 7. Ajustar produto se for cartao
-        if 'free-float' in texto.lower():
-            if 'com periodo' in texto.lower() or 'com período' in texto.lower():
-                credito['produto'] = 'Cartao de credito - com periodo de free-float'
-            elif 'sem periodo' in texto.lower() or 'sem período' in texto.lower():
-                credito['produto'] = 'Cartao de credito - sem periodo de free-float'
+        # Ajustar produto se for cartao
+        for linha in linhas:
+            if 'free-float' in linha.lower():
+                if 'com periodo' in linha.lower() or 'com periodo' in linha.lower():
+                    credito['produto'] = 'Cartao de credito - com periodo de free-float'
+                elif 'sem periodo' in linha.lower() or 'sem periodo' in linha.lower():
+                    credito['produto'] = 'Cartao de credito - sem periodo de free-float'
 
         return credito
 
     def _parse_montante(self, valor_str):
         if not valor_str:
             return 0.0
-        limpo = re.sub(r'[^\d,\.]', '', str(valor_str))
-        limpo = limpo.replace('.', '').replace(',', '.')
+        # Remover tudo exceto digitos, pontos e virgulas
+        limpo = ''
+        for c in str(valor_str):
+            if c.isdigit() or c == '.' or c == ',':
+                limpo += c
+        # Formato portugues: 1.234,56 -> 1234.56
+        limpo = limpo.replace('.', '')
+        limpo = limpo.replace(',', '.')
         try:
             return float(limpo) if limpo else 0.0
         except:
